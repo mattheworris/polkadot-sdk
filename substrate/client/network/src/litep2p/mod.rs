@@ -35,6 +35,7 @@ use crate::{
 			request_response::{RequestResponseConfig, RequestResponseProtocol},
 		},
 	},
+	multiaddr::Protocol,
 	protocol,
 	service::{ensure_addresses_consistent_with_transport, traits::NetworkBackend},
 	IfDisconnected, NetworkStatus, NotificationService, ProtocolName, RequestFailure,
@@ -62,7 +63,7 @@ use sp_runtime::traits::Block as BlockT;
 
 use std::{
 	cmp,
-	collections::{HashMap, HashSet},
+	collections::{hash_map::Entry, HashMap, HashSet},
 	fs, io, iter,
 	sync::{atomic::AtomicUsize, Arc},
 	time::Duration,
@@ -104,6 +105,9 @@ pub struct Litep2pNetworkBackend {
 
 	/// Discovery.
 	discovery: Discovery,
+
+	/// Peerstore.
+	peerstore: Peerstore,
 }
 
 impl Litep2pNetworkBackend {
@@ -377,7 +381,9 @@ impl<B: BlockT + 'static, H: ExHashT> NetworkBackend<B, H> for Litep2pNetworkBac
 		// to the protocol's `peerset` together with the protocol name to allow other subsystems
 		// polkadot sdk to control the connectivity behavior of the notification protocol
 		// TODO: get rid of hardcoded block announcement config
+		let block_announce_protocol = params.block_announce_config.protocol_name().clone();
 		let mut notif_protocols = HashMap::new();
+
 		notif_protocols.insert(
 			params.block_announce_config.protocol_name().clone(),
 			params.block_announce_config.peerset_tx,
@@ -470,11 +476,14 @@ impl<B: BlockT + 'static, H: ExHashT> NetworkBackend<B, H> for Litep2pNetworkBac
 			keypair.clone(),
 			cmd_tx,
 			params.peer_store.clone(),
+			notif_protocols.clone(),
+			block_announce_protocol,
 		));
 
 		Ok(Self {
 			network_service,
 			cmd_rx,
+			peerstore,
 			listen_addresses,
 			config: config_builder.build(),
 			notif_protocols,
@@ -537,6 +546,7 @@ impl<B: BlockT + 'static, H: ExHashT> NetworkBackend<B, H> for Litep2pNetworkBac
 			peerset_handles: self.notif_protocols,
 			discovery: self.discovery,
 			protocol_set: self.protocol_set,
+			peerstore: self.peerstore,
 			litep2p: Litep2p::new(self.config).await.expect("to succeed"),
 		};
 
@@ -566,9 +576,65 @@ struct Litep2pBackend {
 
 	/// Discovery.
 	discovery: Discovery,
+
+	/// Peerstore.
+	peerstore: Peerstore,
 }
 
 impl Litep2pBackend {
+	/// From an iterator of multiaddress(es), parse and group all addresses of peers
+	/// so that litep2p can consume the information easily.
+	// TODO: this is such an ugly function
+	// TODO: add tests for this function
+	fn parse_addresses(
+		addresses: impl Iterator<Item = Multiaddr>,
+	) -> HashMap<PeerId, Vec<Multiaddr>> {
+		let mut peers = HashMap::new();
+
+		for address in addresses {
+			let mut iter = address.iter();
+
+			match iter.next() {
+				Some(
+					Protocol::Dns(_) |
+					Protocol::Dns4(_) |
+					Protocol::Dns6(_) |
+					Protocol::Ip6(_) |
+					Protocol::Ip4(_),
+				) => {
+					if let Some(Protocol::P2p(multihash)) =
+						iter.find(|protocol| std::matches!(protocol, Protocol::P2p(_)))
+					{
+						if let Ok(peer) = PeerId::from_multihash(multihash) {
+							match peers.entry(peer) {
+								Entry::Vacant(entry) => {
+									entry.insert(vec![address]);
+								},
+								Entry::Occupied(entry) => {
+									entry.into_mut().push(address);
+								},
+							}
+							if !peers.contains_key(&peer) {
+								peers.insert(peer, vec![]);
+							}
+						}
+					}
+				},
+				Some(Protocol::P2p(multihash)) => {
+					// TODO: this is so braindead
+					if let Ok(peer) = PeerId::from_multihash(multihash) {
+						if !peers.contains_key(&peer) {
+							peers.insert(peer, vec![]);
+						}
+					}
+				},
+				_ => continue,
+			}
+		}
+
+		peers
+	}
+
 	/// Start [`Litep2pBackend`] event loop.
 	async fn run(mut self) {
 		log::debug!(target: LOG_TARGET, "staring litep2p network backend");
@@ -604,25 +670,81 @@ impl Litep2pBackend {
 							protocol,
 							peers,
 						} => {
-							// match self.notif_protocols.get(&protocol) {
-							// 	Some(tx) => tx.unbounded_send(PeersetCommand::),
-							// 	None => log::warn!(target: LOG_TARGET, "cannot set reserved peers {protocol:?} doens't exist"),
-							// }
-						}
-						NetworkServiceCommand::RemovePeersFromReservedSet {
-							protocol,
-							peers,
-						} => {}
-						NetworkServiceCommand::DisconnectPeer { peer, protocol } => {
-							match self.peerset_handles.get(&protocol) {
-								None => log::warn!(target: LOG_TARGET, "protocol {protocol:?} doens't exist"),
-								Some(tx) => {
-									log::error!(target: LOG_TARGET, "disconnect {peer:?} from {protocol:?}");
-									let _ = tx.unbounded_send(PeersetCommand::DisconnectPeer { peer });
+							let Some(tx) = self.peerset_handles.get(&protocol) else {
+								log::warn!(target: LOG_TARGET, "protocol {protocol} doens't exist");
+								continue
+							};
+
+							log::trace!(target: LOG_TARGET, "add reserved peers ({peers:?}) for {protocol}");
+
+							// TODO: verify that the address is something that's actually supported by litep2p when calling `add_known_address()`
+							let peers = Self::parse_addresses(peers.into_iter()).into_iter().filter_map(|(peer, addresses)| {
+								// `peers` contained multiaddress like `/p2p/<peer ID>`
+								if addresses.is_empty() {
+									return Some(peer);
 								}
+
+								if self.litep2p.add_known_address(peer.into(), addresses.into_iter()) == 0usize {
+									log::warn!(
+										target: LOG_TARGET,
+										"couldn't add any addresses for peer {peer:?}, peer won't be added as reserved peer"
+									);
+									return None;
+								}
+
+								self.peerstore.handle().add_known_peer(peer);
+								Some(peer)
+							})
+							.collect::<HashSet<_>>();
+
+							let _ = tx.unbounded_send(PeersetCommand::AddReservePeers { peers });
+						}
+						NetworkServiceCommand::ReportPeer { peer, cost_benefit } => {
+							log::debug!(target: LOG_TARGET, "report peer {peer:?}: {cost_benefit:?}");
+							self.peerstore.handle().report_peer(peer, cost_benefit.value);
+						},
+						NetworkServiceCommand::AddKnownAddress { peer, mut address } => {
+							if !address.iter().any(|protocol| std::matches!(protocol, Protocol::P2p(_))) {
+								address.push(Protocol::P2p(peer.into()));
+							}
+
+							if self.litep2p.add_known_address(peer.into(), std::iter::once(address.clone())) == 0usize {
+								log::warn!(
+									target: LOG_TARGET,
+									"couldn't add known address ({address}) for {peer:?}, unsupported transport"
+								);
 							}
 						},
-						NetworkServiceCommand::ReportPeer { peer, cost_benefit } => {},
+						NetworkServiceCommand::SetReservedPeers { protocol, peers } => {
+							let Some(tx) = self.peerset_handles.get(&protocol) else {
+								log::warn!(target: LOG_TARGET, "protocol {protocol} doens't exist");
+								continue
+							};
+
+							log::trace!(target: LOG_TARGET, "set reserved peers ({peers:?}) for {protocol}");
+
+							// TODO: verify that the address is something that's actually supported by litep2p when calling `add_known_address()`
+							let peers = Self::parse_addresses(peers.into_iter()).into_iter().filter_map(|(peer, addresses)| {
+								// `peers` contained multiaddress in the form `/p2p/<peer ID>`
+								if addresses.is_empty() {
+									return Some(peer);
+								}
+
+								if self.litep2p.add_known_address(peer.into(), addresses.into_iter()) == 0usize {
+									log::warn!(
+										target: LOG_TARGET,
+										"couldn't add any addresses for peer {peer:?}, peer won't be added as reserved peer"
+									);
+									return None;
+								}
+
+								self.peerstore.handle().add_known_peer(peer);
+								Some(peer)
+							})
+							.collect::<HashSet<_>>();
+
+							let _ = tx.unbounded_send(PeersetCommand::SetReservedPeers { peers });
+						},
 					}
 				},
 				event = self.litep2p.next_event() => match event {

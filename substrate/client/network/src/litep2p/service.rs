@@ -20,6 +20,7 @@
 
 use crate::{
 	config::MultiaddrWithPeerId,
+	litep2p::shim::notification::peerset::PeersetCommand,
 	network_state::NetworkState,
 	peer_store::{PeerStoreHandle, PeerStoreProvider},
 	service::traits::NotificationSender,
@@ -40,7 +41,7 @@ use sc_network_common::{
 use sc_network_types::PeerId;
 use sc_utils::mpsc::TracingUnboundedSender;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "sub-libp2p";
@@ -64,7 +65,10 @@ pub enum NetworkServiceCommand {
 	},
 
 	/// Query network status.
-	Status { tx: oneshot::Sender<NetworkStatus> },
+	Status {
+		/// `oneshot::Sender` for sending the status.
+		tx: oneshot::Sender<NetworkStatus>,
+	},
 
 	/// Send request to remote peer.
 	StartRequest {
@@ -93,24 +97,6 @@ pub enum NetworkServiceCommand {
 		peers: HashSet<Multiaddr>,
 	},
 
-	/// Remove `peers` from `protocol`'s reserved set.
-	RemovePeersFromReservedSet {
-		/// Protocol.
-		protocol: ProtocolName,
-
-		/// Reserved peers.
-		peers: Vec<PeerId>,
-	},
-
-	/// Disconnect peer.
-	DisconnectPeer {
-		/// Peer ID.
-		peer: PeerId,
-
-		/// Protocol from which the peer should be disconnected.
-		protocol: ProtocolName,
-	},
-
 	/// Report peer.
 	ReportPeer {
 		/// Peer ID.
@@ -118,6 +104,24 @@ pub enum NetworkServiceCommand {
 
 		/// Reputation change.
 		cost_benefit: ReputationChange,
+	},
+
+	/// Add known address for peer.
+	AddKnownAddress {
+		/// Peer ID.
+		peer: PeerId,
+
+		/// Address.
+		address: Multiaddr,
+	},
+
+	/// Set reserved peers for `protocol`.
+	SetReservedPeers {
+		/// Protocol.
+		protocol: ProtocolName,
+
+		/// Reserved peers.
+		peers: HashSet<Multiaddr>,
 	},
 }
 
@@ -135,6 +139,12 @@ pub struct Litep2pNetworkService {
 
 	/// Handle to `PeerStore`.
 	peer_store_handle: PeerStoreHandle,
+
+	/// Peerset handles.
+	peerset_handles: HashMap<ProtocolName, TracingUnboundedSender<PeersetCommand>>,
+
+	/// Name for the block announce protocol.
+	block_announce_protocol: ProtocolName,
 }
 
 impl Litep2pNetworkService {
@@ -144,8 +154,17 @@ impl Litep2pNetworkService {
 		keypair: Keypair,
 		cmd_tx: TracingUnboundedSender<NetworkServiceCommand>,
 		peer_store_handle: PeerStoreHandle,
+		peerset_handles: HashMap<ProtocolName, TracingUnboundedSender<PeersetCommand>>,
+		block_announce_protocol: ProtocolName,
 	) -> Self {
-		Self { local_peer_id, keypair, cmd_tx, peer_store_handle }
+		Self {
+			local_peer_id,
+			keypair,
+			cmd_tx,
+			peer_store_handle,
+			peerset_handles,
+			block_announce_protocol,
+		}
 	}
 }
 
@@ -186,16 +205,28 @@ impl NetworkStatusProvider for Litep2pNetworkService {
 
 // Manual implementation to avoid extra boxing here
 impl NetworkPeers for Litep2pNetworkService {
-	fn set_authorized_peers(&self, _peers: HashSet<PeerId>) {
-		todo!();
+	fn set_authorized_peers(&self, peers: HashSet<PeerId>) {
+		match self.peerset_handles.get(&self.block_announce_protocol) {
+			None => log::warn!(target: LOG_TARGET, "block announce protocol hasn't been enabled"),
+			Some(tx) => {
+				let _ = tx.unbounded_send(PeersetCommand::SetReservedPeers { peers });
+			},
+		}
 	}
 
-	fn set_authorized_only(&self, _reserved_only: bool) {
-		todo!();
+	fn set_authorized_only(&self, reserved_only: bool) {
+		match self.peerset_handles.get(&self.block_announce_protocol) {
+			None => log::warn!(target: LOG_TARGET, "block announce protocol hasn't been enabled"),
+			Some(tx) => {
+				let _ = tx.unbounded_send(PeersetCommand::SetReservedOnly { reserved_only });
+			},
+		}
 	}
 
-	fn add_known_address(&self, _peer: PeerId, _address: Multiaddr) {
-		todo!();
+	fn add_known_address(&self, peer: PeerId, address: Multiaddr) {
+		let _ = self
+			.cmd_tx
+			.unbounded_send(NetworkServiceCommand::AddKnownAddress { peer, address });
 	}
 
 	fn report_peer(&self, peer: PeerId, cost_benefit: ReputationChange) {
@@ -205,36 +236,63 @@ impl NetworkPeers for Litep2pNetworkService {
 	}
 
 	fn disconnect_peer(&self, peer: PeerId, protocol: ProtocolName) {
-		let _ = self
-			.cmd_tx
-			.unbounded_send(NetworkServiceCommand::DisconnectPeer { peer, protocol });
+		match self.peerset_handles.get(&protocol) {
+			None => log::warn!(target: LOG_TARGET, "protocol {protocol:?} doens't exist"),
+			Some(tx) => {
+				let _ = tx.unbounded_send(PeersetCommand::DisconnectPeer { peer });
+			},
+		}
 	}
 
 	fn accept_unreserved_peers(&self) {
-		todo!();
+		match self.peerset_handles.get(&self.block_announce_protocol) {
+			None => log::warn!(target: LOG_TARGET, "block announce protocol hasn't been enabled"),
+			Some(tx) => {
+				let _ = tx.unbounded_send(PeersetCommand::SetReservedOnly { reserved_only: false });
+			},
+		}
 	}
 
 	fn deny_unreserved_peers(&self) {
-		todo!();
+		match self.peerset_handles.get(&self.block_announce_protocol) {
+			None => log::warn!(target: LOG_TARGET, "block announce protocol hasn't been enabled"),
+			Some(tx) => {
+				let _ = tx.unbounded_send(PeersetCommand::SetReservedOnly { reserved_only: true });
+			},
+		}
 	}
 
-	fn add_reserved_peer(&self, _peer: MultiaddrWithPeerId) -> Result<(), String> {
-		todo!();
+	fn add_reserved_peer(&self, peer: MultiaddrWithPeerId) -> Result<(), String> {
+		log::trace!(target: LOG_TARGET, "add reserved peer {peer:?} for block announce protocol");
+
+		let _ = self
+			.cmd_tx
+			.unbounded_send(NetworkServiceCommand::AddPeersToReservedSet { protocol: self.block_announce_protocol.clone(), peers: HashSet::from_iter([peer.concat()]) });
+		Ok(())
 	}
 
-	fn remove_reserved_peer(&self, _peer: PeerId) {
-		todo!();
+	fn remove_reserved_peer(&self, peer: PeerId) {
+		log::trace!(target: LOG_TARGET, "remove reserved peer {peer:?} from block announce protocol");
+
+		match self.peerset_handles.get(&self.block_announce_protocol) {
+			None => log::warn!(target: LOG_TARGET, "block announce protocol hasn't been enabled"),
+			Some(tx) => {
+				let _ = tx.unbounded_send(PeersetCommand::RemoveReservedPeers { peers: HashSet::from_iter([peer]) });
+			}
+		}
 	}
 
 	fn set_reserved_peers(
 		&self,
-		_protocol: ProtocolName,
-		_peers: HashSet<Multiaddr>,
+		protocol: ProtocolName,
+		peers: HashSet<Multiaddr>,
 	) -> Result<(), String> {
-		todo!();
+		let _ = self
+			.cmd_tx
+			.unbounded_send(NetworkServiceCommand::SetReservedPeers { protocol, peers });
+		Ok(())
 	}
 
-	// TODO: this could directly use the peerset tx
 	fn add_peers_to_reserved_set(
 		&self,
 		protocol: ProtocolName,
@@ -246,19 +304,24 @@ impl NetworkPeers for Litep2pNetworkService {
 		Ok(())
 	}
 
-	// TODO: this could directly use the peerset tx
 	fn remove_peers_from_reserved_set(
 		&self,
 		protocol: ProtocolName,
 		peers: Vec<PeerId>,
 	) -> Result<(), String> {
-		let _ = self
-			.cmd_tx
-			.unbounded_send(NetworkServiceCommand::RemovePeersFromReservedSet { protocol, peers });
+		let Some(tx) = self.peerset_handles.get(&protocol) else {
+			log::warn!(target: LOG_TARGET, "protocol {protocol} doesn't exist");
+			return Err(String::from("protocol doens't exist"))
+		};
+
+		let _ = tx.unbounded_send(PeersetCommand::RemoveReservedPeers {
+			peers: peers.into_iter().collect(),
+		});
 		Ok(())
 	}
 
 	fn sync_num_connected(&self) -> usize {
+		// TODO: how to implement this
 		todo!();
 	}
 
@@ -303,7 +366,7 @@ impl NetworkRequest for Litep2pNetworkService {
 		_request: Vec<u8>,
 		_connect: IfDisconnected,
 	) -> Result<Vec<u8>, RequestFailure> {
-		todo!();
+		unimplemented!();
 	}
 
 	fn start_request(

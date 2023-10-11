@@ -71,13 +71,14 @@ impl PeerstoreHandle {
 	pub fn next_outbound_peer(&self, ignore: &HashSet<&PeerId>) -> Option<PeerId> {
 		let handle = self.0.lock();
 
-		for peer in handle.peers.keys() {
-			if !ignore.contains(peer) {
-				return Some(*peer)
-			}
-		}
-
-		None
+		// TODO: this is really bad
+		let mut candidates = handle
+			.peers
+			.iter()
+			.filter_map(|(peer, score)| (!ignore.contains(&peer)).then_some((peer, score)))
+			.collect::<Vec<_>>();
+		candidates.sort_by(|(_, a), (_, b)| a.cmp(b));
+		candidates.get(0).map(|(peer, _)| *peer).copied()
 	}
 
 	pub fn peer_count(&self) -> usize {
@@ -104,6 +105,11 @@ impl Peerstore {
 	/// Create new [`Peerstore`].
 	pub fn new() -> Self {
 		Self { peerstore_handle: peerstore_handle() }
+	}
+
+	/// Get mutable reference to the underlying [`PeerstoreHandle`].
+	pub fn handle(&mut self) -> &mut PeerstoreHandle {
+		&mut self.peerstore_handle
 	}
 
 	/// Add known peer to [`Peerstore`].

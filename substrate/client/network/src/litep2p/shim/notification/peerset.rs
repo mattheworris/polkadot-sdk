@@ -18,12 +18,16 @@
 
 //! `Peerset` implementation for `litep2p`.
 
-use crate::{litep2p::peerstore::PeerstoreHandle, service::traits::Direction, ProtocolName};
+use crate::{
+	litep2p::peerstore::PeerstoreHandle,
+	service::traits::{Direction, ValidationResult},
+	ProtocolName,
+};
 
 use futures::{future::BoxFuture, stream::FuturesUnordered, Stream, StreamExt};
 use futures_timer::Delay;
 
-use litep2p::protocol::notification::{NotificationError, ValidationResult};
+use litep2p::protocol::notification::NotificationError;
 use sc_network_types::PeerId;
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver, TracingUnboundedSender};
 
@@ -229,6 +233,9 @@ impl Peerset {
 	}
 
 	/// Report to [`Peerset`] that a substream was opened.
+	///
+	/// Slot for the stream was "preallocated" when the it was initiated (outbound) or accepted
+	/// (inbound) by the local node.
 	pub fn report_substream_opened(&mut self, peer: PeerId, direction: Direction) {
 		log::debug!(
 			target: LOG_TARGET,
@@ -237,17 +244,9 @@ impl Peerset {
 		);
 
 		self.peers.insert(peer, PeerState::Connected { direction });
-
-		match (self.reserved_peers.contains(&peer), direction) {
-			(false, Direction::Inbound) => {
-				self.num_in += 1;
-			},
-			(false, Direction::Outbound) => {
-				self.num_out += 1;
-			},
-			_ => {},
-		}
 	}
+
+	pub fn report_substream_rejected(&mut self, peer: PeerId) {}
 
 	/// Report to [`Peerset`] that a substream was closed.
 	pub fn report_substream_closed(&mut self, peer: PeerId) {
@@ -297,12 +296,20 @@ impl Peerset {
 	pub fn report_inbound_substream(&mut self, peer: PeerId) -> ValidationResult {
 		log::trace!(target: LOG_TARGET, "inbound substream from {peer:?}");
 
-		match self.peers.entry(peer) {
-			Entry::Vacant(entry) => {
-				todo!();
+		let state = self.peers.entry(peer).or_insert(PeerState::NotConnected);
+
+		match state {
+			PeerState::NotConnected => {
+				*state = PeerState::Opening;
 			},
-			Entry::Occupied(entry) => {
-				todo!();
+			PeerState::Backoff => {
+				log::trace!(target: LOG_TARGET, "peer ({peer:?}) is backed-off, reject inbound substream");
+				return ValidationResult::Reject
+			},
+			state => {
+				log::warn!(target: LOG_TARGET, "invalid state ({state:?}) for inbound substream, peer {peer:?}");
+				debug_assert!(false);
+				return ValidationResult::Reject
 			},
 		}
 
@@ -310,16 +317,19 @@ impl Peerset {
 			return ValidationResult::Accept
 		}
 
-		// if self.num_in < self.max_in {
-		// 	self.num_in += 1;
-		return ValidationResult::Accept
-		// }
+		if self.num_in < self.max_in {
+			self.num_in += 1;
+			return ValidationResult::Accept
+		}
+
+		return ValidationResult::Reject
 	}
 
 	/// Report to [`Peerset`] that an inbound substream was opened and that it should validate it.
 	pub fn report_substream_open_failure(&mut self, peer: PeerId, error: NotificationError) {
 		log::trace!(target: LOG_TARGET, "failed to open substream to peer {peer:?}: {error:?}");
 
+		self.num_out -= 1;
 		self.peers.insert(peer, PeerState::Backoff);
 		self.peerstore_handle.report_peer(peer, OPEN_FAILURE_ADJUSTMENT);
 		self.pending_backoffs.push(Box::pin(async move {
@@ -367,10 +377,14 @@ impl Stream for Peerset {
 					Some(state) => {
 						log::warn!(target: LOG_TARGET, "cannot disconnect peer, invalid state: {state:?}");
 						self.peers.insert(peer, state);
+						debug_assert!(false);
 					},
-					None => log::error!(target: LOG_TARGET, "peer doens't exist"),
+					None => {
+						log::error!(target: LOG_TARGET, "peer doens't exist");
+						debug_assert!(false);
+					},
 				},
-				_ => todo!("unhandled command"),
+				_ => {}, // command => todo!("unhandled command: {command:?} {}", self.protocol),
 			}
 		}
 
@@ -385,7 +399,7 @@ impl Stream for Peerset {
 		// if the number of outbound peers is lower than the desired amount of oubound peers,
 		// query `PeerStore` and try to get a new outbound candidated.
 		if self.num_out < self.max_out {
-			let ignore = self
+			let ignore: HashSet<&PeerId> = self
 				.peers
 				.iter()
 				.filter_map(|(peer, state)| {
@@ -399,17 +413,12 @@ impl Stream for Peerset {
 				})
 				.collect();
 
-			match self.peerstore_handle.next_outbound_peer(&ignore) {
-				Some(peer) => {
-					log::trace!(target: LOG_TARGET, "start connecting to peer {peer:?}");
+			if let Some(peer) = self.peerstore_handle.next_outbound_peer(&ignore) {
+				log::trace!(target: LOG_TARGET, "start connecting to peer {peer:?}");
 
-					self.peers.insert(peer, PeerState::Opening);
-					self.num_out += 1;
-					return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peer }))
-				},
-				None => {
-					log::trace!(target: LOG_TARGET, "no peer available for an outbound connection");
-				},
+				self.peers.insert(peer, PeerState::Opening);
+				self.num_out += 1;
+				return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peer }))
 			}
 		}
 

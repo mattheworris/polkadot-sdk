@@ -49,7 +49,7 @@ use std::{
 // TODO: get rid of the hideous `pending_actions` contraption
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "sub-libp2p";
+const LOG_TARGET: &str = "sub-libp2p::request-response";
 
 /// Request-response protocol configuration.
 ///
@@ -196,6 +196,7 @@ impl Stream for RequestResponseProtocol {
 		loop {
 			let Some(action) = this.pending_actions.pop_front() else { break };
 
+			// TODO: this can potentially cause issues
 			if !this.handle.can_send() {
 				this.pending_actions.push_front(action);
 				break
@@ -204,9 +205,15 @@ impl Stream for RequestResponseProtocol {
 			// TODO: this is so ugly
 			match action {
 				Action::SendResponse { request_id, response } => {
+					log::trace!(target: LOG_TARGET, "send response, request id {request_id:?}, response len: {}", response.len());
+
+					// match Pin::new(&mut this.handle.send_response(request_id, response)).poll(cx)
+					// { 	Poll::Pending => {}
+					// 	_ => {}
+					// }
+
 					let future = this.handle.send_response(request_id, response);
 					pin_mut!(future);
-
 					match future.poll(cx) {
 						Poll::Pending =>
 							log::error!(target: LOG_TARGET, "channel has capacity but couldn't send"),
@@ -215,6 +222,8 @@ impl Stream for RequestResponseProtocol {
 					}
 				},
 				Action::RejectRequest { request_id } => {
+					log::trace!(target: LOG_TARGET, "reject request, request id {request_id:?}");
+
 					let future = this.handle.reject_request(request_id);
 					pin_mut!(future);
 
@@ -290,13 +299,13 @@ impl Stream for RequestResponseProtocol {
 								this.protocol,
 							),
 							Some(tx) => {
-								// log::error!(
-								// 	target: LOG_TARGET, "{:?}: response received for {:?}, (peer
-								// {:?}), response size {:?}", 	this.protocol,
-								// 	request_id,
-								// 	peer,
-								// 	response.len(),
-								// );
+								log::trace!(
+									target: LOG_TARGET, "{:?}: response received for {:?}, (peer {:?}), response size {:?}",
+									this.protocol,
+									request_id,
+									peer,
+									response.len(),
+								);
 								let _ = tx.send(Ok(response));
 							},
 						},

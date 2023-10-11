@@ -153,6 +153,10 @@ impl NotificationService for NotificationProtocol {
 						peer,
 						handshake,
 					} => {
+						if std::matches!(self.peerset.report_inbound_substream(peer.into()), ValidationResult::Reject) {
+							continue;
+						}
+
 						let (tx, rx) = oneshot::channel();
 						self.pending_validations.push(Box::pin(async move { (peer.into(), rx.await) }));
 
