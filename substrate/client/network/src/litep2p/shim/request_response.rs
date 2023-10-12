@@ -44,7 +44,7 @@ use std::{
 	time::Duration,
 };
 
-// TODO: add tests
+// TODO: add lots of tests
 // TODO: get rid of the hideous `can_send()` contraption
 // TODO: get rid of the hideous `pending_actions` contraption
 
@@ -206,12 +206,7 @@ impl Stream for RequestResponseProtocol {
 			// TODO: this is so ugly
 			match action {
 				Action::SendResponse { request_id, response } => {
-					log::trace!(target: LOG_TARGET, "send response, request id {request_id:?}, response len: {}", response.len());
-
-					// match Pin::new(&mut this.handle.send_response(request_id, response)).poll(cx)
-					// { 	Poll::Pending => {}
-					// 	_ => {}
-					// }
+					log::trace!(target: LOG_TARGET, "send response ({request_id:?}), response len: {}", response.len());
 
 					let future = this.handle.send_response(request_id, response);
 					pin_mut!(future);
@@ -223,7 +218,7 @@ impl Stream for RequestResponseProtocol {
 					}
 				},
 				Action::RejectRequest { request_id } => {
-					log::trace!(target: LOG_TARGET, "reject request, request id {request_id:?}");
+					log::trace!(target: LOG_TARGET, "{:?}: reject request ({request_id:?})", this.protocol);
 
 					let future = this.handle.reject_request(request_id);
 					pin_mut!(future);
@@ -249,10 +244,9 @@ impl Stream for RequestResponseProtocol {
 						request,
 					} => {
 						log::trace!(
-							target: LOG_TARGET, "{:?}: request received for {:?}, (peer {:?}), request size {:?}",
+							target: LOG_TARGET,
+							"{:?}: request received from {peer:?} ({request_id:?}), request size {:?}",
 							this.protocol,
-							request_id,
-							peer,
 							request.len(),
 						);
 						let (tx, rx) = oneshot::channel();
@@ -269,7 +263,8 @@ impl Stream for RequestResponseProtocol {
 							},
 							Err(_) => {
 								log::trace!(
-									target: LOG_TARGET, "{:?}: dropping request, inbound queue full",
+									target: LOG_TARGET,
+									"{:?}: dropping request from {peer:?} ({request_id:?}), inbound queue full",
 									this.protocol,
 								);
 
@@ -301,23 +296,25 @@ impl Stream for RequestResponseProtocol {
 							),
 							Some(tx) => {
 								log::trace!(
-									target: LOG_TARGET, "{:?}: response received for {:?}, (peer {:?}), response size {:?}",
+									target: LOG_TARGET,
+									"{:?}: response received for peer {peer:?} ({request_id:?}), response size {:?}",
 									this.protocol,
-									request_id,
-									peer,
 									response.len(),
 								);
 								let _ = tx.send(Ok(response));
 							},
 						},
 					RequestResponseEvent::RequestFailed { peer, request_id, error } => {
-						// log::error!(target: LOG_TARGET, "request failed error: {error:?},
-						// {request_id:?} {peer:?}");
+						log::debug!(
+							target: LOG_TARGET,
+							"{:?}: request failed for {peer:?} ({request_id:?}): {error:?}",
+							this.protocol
+						);
 
 						match this.pending_inbound_responses.remove(&request_id) {
 							None => log::warn!(
 								target: LOG_TARGET,
-								"{:?}: pending failed request for {request_id:?} (peer {peer:?}) doesn't exist",
+								"{:?}: pending request for {peer:?} ({request_id:?}) doesn't exist",
 								this.protocol,
 							),
 							Some(tx) => {

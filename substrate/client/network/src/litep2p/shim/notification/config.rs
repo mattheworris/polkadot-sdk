@@ -73,7 +73,7 @@ impl NotificationProtocolConfig {
 			protocol_name.clone(),
 			set_config.out_peers as usize,
 			set_config.in_peers as usize,
-			set_config.non_reserved_mode == NonReservedPeerMode::Accept,
+			set_config.non_reserved_mode == NonReservedPeerMode::Deny,
 			set_config.reserved_nodes.iter().map(|address| address.peer_id).collect(),
 			peerstore_handle(),
 		);

@@ -249,7 +249,12 @@ impl Stream for Discovery {
 				this.next_kad_query = Some(Delay::new(KADEMLIA_QUERY_INTERVAL));
 			},
 			Poll::Ready(Some(KademliaEvent::RoutingTableUpdate { peers })) => {
-				log::error!(target: LOG_TARGET, "routing table update, num peers {} {}", peers.len(), this.peerstore_handle.peer_count());
+				log::trace!(
+					target: LOG_TARGET,
+					"routing table update, discovered {} peers, total peers discovered {}",
+					peers.len(),
+					this.peerstore_handle.peer_count()
+				);
 
 				for peer in peers {
 					this.peerstore_handle.add_known_peer(peer.into());

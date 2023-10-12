@@ -39,6 +39,8 @@ use sc_network_types::PeerId;
 pub mod config;
 pub mod peerset;
 
+// TODO: add lots of tests
+
 /// Logging target for the file.
 const LOG_TARGET: &str = "sub-libp2p::notification";
 
