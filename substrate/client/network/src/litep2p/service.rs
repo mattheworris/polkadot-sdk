@@ -170,6 +170,7 @@ impl Litep2pNetworkService {
 
 impl NetworkSigner for Litep2pNetworkService {
 	fn sign_with_local_identity(&self, _msg: Vec<u8>) -> Result<Signature, SigningError> {
+		// TODO(aaro): implement
 		let _public_key = self.keypair.public();
 		todo!();
 		// let bytes = self.keypair.sign(message.as_ref())?;
@@ -199,6 +200,7 @@ impl NetworkStatusProvider for Litep2pNetworkService {
 	}
 
 	async fn network_state(&self) -> Result<NetworkState, ()> {
+		// TODO(aaro): implement
 		todo!();
 	}
 }
@@ -265,9 +267,10 @@ impl NetworkPeers for Litep2pNetworkService {
 	fn add_reserved_peer(&self, peer: MultiaddrWithPeerId) -> Result<(), String> {
 		log::trace!(target: LOG_TARGET, "add reserved peer {peer:?} for block announce protocol");
 
-		let _ = self
-			.cmd_tx
-			.unbounded_send(NetworkServiceCommand::AddPeersToReservedSet { protocol: self.block_announce_protocol.clone(), peers: HashSet::from_iter([peer.concat()]) });
+		let _ = self.cmd_tx.unbounded_send(NetworkServiceCommand::AddPeersToReservedSet {
+			protocol: self.block_announce_protocol.clone(),
+			peers: HashSet::from_iter([peer.concat()]),
+		});
 		Ok(())
 	}
 
@@ -277,8 +280,10 @@ impl NetworkPeers for Litep2pNetworkService {
 		match self.peerset_handles.get(&self.block_announce_protocol) {
 			None => log::warn!(target: LOG_TARGET, "block announce protocol hasn't been enabled"),
 			Some(tx) => {
-				let _ = tx.unbounded_send(PeersetCommand::RemoveReservedPeers { peers: HashSet::from_iter([peer]) });
-			}
+				let _ = tx.unbounded_send(PeersetCommand::RemoveReservedPeers {
+					peers: HashSet::from_iter([peer]),
+				});
+			},
 		}
 	}
 
@@ -321,7 +326,7 @@ impl NetworkPeers for Litep2pNetworkService {
 	}
 
 	fn sync_num_connected(&self) -> usize {
-		// TODO: how to implement this
+		// TODO(aaro): implement
 		todo!();
 	}
 
@@ -338,16 +343,19 @@ impl NetworkPeers for Litep2pNetworkService {
 
 impl NetworkEventStream for Litep2pNetworkService {
 	fn event_stream(&self, _stream_name: &'static str) -> BoxStream<'static, Event> {
+		// TODO(aaro): implement
 		todo!();
 	}
 }
 
 impl NetworkStateInfo for Litep2pNetworkService {
 	fn external_addresses(&self) -> Vec<Multiaddr> {
+		// TODO(aaro): implement
 		todo!();
 	}
 
 	fn listen_addresses(&self) -> Vec<Multiaddr> {
+		// TODO(aaro): implement
 		todo!();
 	}
 

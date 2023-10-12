@@ -103,6 +103,7 @@ impl RequestResponseConfigT for RequestResponseConfig {
 	}
 }
 
+/// Request-response action.
 enum Action {
 	/// Send response.
 	SendResponse {
@@ -339,6 +340,7 @@ impl Stream for RequestResponseProtocol {
 		}
 
 		// handle pending outbound responses
+		// TODO(aaro): implement
 		while let Poll::Ready(Some((request_id, event))) =
 			this.pending_outbound_responses.poll_next_unpin(cx)
 		{

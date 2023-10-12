@@ -248,6 +248,7 @@ impl<B: BlockT + 'static, H: ExHashT> NetworkBackend<B, H> for Litep2pNetworkBac
 	type NetworkService<Block, Hash> = Arc<Litep2pNetworkService>;
 
 	/// Create new `NetworkBackend`.
+	// TODO(aaro): clean up this function
 	fn new(mut params: Params<B, H, Self>) -> Result<Self, Error>
 	where
 		Self: Sized,
@@ -645,9 +646,11 @@ impl Litep2pBackend {
 					None => return,
 					Some(command) => match command {
 						NetworkServiceCommand::GetValue{ .. } => {
+							// TODO(aaro): implement
 							todo!();
 						}
 						NetworkServiceCommand::PutValue { .. } => {
+							// TODO(aaro): implement
 							todo!();
 						}
 						NetworkServiceCommand::Status { tx } => {

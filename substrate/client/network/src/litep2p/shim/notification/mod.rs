@@ -30,7 +30,7 @@ use crate::{
 
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use litep2p::protocol::notification::{
-	self, NotificationError, NotificationEvent, NotificationHandle,
+	self, NotificationError, NotificationEvent, NotificationHandle, NotificationSink,
 };
 use tokio::sync::oneshot;
 
@@ -41,6 +41,57 @@ pub mod peerset;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "sub-libp2p::notification";
+
+/// Wrapper over `litep2p`'s notification sink.
+pub struct Litep2pMessageSink {
+	/// Protocol.
+	protocol: ProtocolName,
+
+	/// Remote peer ID.
+	peer: PeerId,
+
+	/// Notification sink.
+	sink: NotificationSink,
+}
+
+impl Litep2pMessageSink {
+	/// Create new [`Litep2pMessageSink`].
+	fn new(peer: PeerId, protocol: ProtocolName, sink: NotificationSink) -> Self {
+		Self { protocol, peer, sink }
+	}
+}
+
+#[async_trait::async_trait]
+impl MessageSink for Litep2pMessageSink {
+	/// Send synchronous `notification` to the peer associated with this [`MessageSink`].
+	fn send_sync_notification(&self, notification: Vec<u8>) {
+		if let Err(error) = self.sink.send_sync_notification(notification) {
+			log::debug!(
+				target: LOG_TARGET,
+				"failed to send sync notification to {:?} over {}: {error:?}",
+				self.peer,
+				self.protocol,
+			);
+		}
+	}
+
+	/// Send an asynchronous `notification` to to the peer associated with this [`MessageSink`],
+	/// allowing sender to exercise backpressure.
+	///
+	/// Returns an error if the peer does not exist.
+	async fn send_async_notification(&self, notification: Vec<u8>) -> Result<(), Error> {
+		self.sink.send_async_notification(notification).await.map_err(|error| {
+			log::debug!(
+				target: LOG_TARGET,
+				"failed to send async notification to {:?} over {}: {error:?}",
+				self.peer,
+				self.protocol,
+			);
+
+			Error::Litep2p(error)
+		})
+	}
+}
 
 /// Notification protocol implementation.
 #[derive(Debug)]
@@ -88,11 +139,11 @@ impl NotificationProtocol {
 #[async_trait::async_trait]
 impl NotificationService for NotificationProtocol {
 	async fn open_substream(&mut self, peer: PeerId) -> Result<(), ()> {
-		unimplemented!("");
+		unimplemented!();
 	}
 
 	async fn close_substream(&mut self, peer: PeerId) -> Result<(), ()> {
-		unimplemented!("");
+		unimplemented!();
 	}
 
 	fn send_sync_notification(&mut self, peer: &PeerId, notification: Vec<u8>) {
@@ -139,7 +190,11 @@ impl NotificationService for NotificationProtocol {
 
 	/// Get message sink of the peer.
 	fn message_sink(&self, peer: &PeerId) -> Option<Box<dyn MessageSink>> {
-		todo!();
+		self.handle.notification_sink(peer.into()).map(|sink| {
+			let sink: Box<dyn MessageSink> =
+				Box::new(Litep2pMessageSink::new(*peer, self.protocol.clone(), sink));
+			sink
+		})
 	}
 
 	/// Get next event from the `Notifications` event stream.

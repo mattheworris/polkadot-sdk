@@ -256,6 +256,7 @@ impl Stream for Discovery {
 				}
 			},
 			Poll::Ready(Some(KademliaEvent::GetRecordResult { .. })) => {
+				// TODO(aaro); implement
 				todo!("should not get getrecordresult");
 			},
 			_ => {},
