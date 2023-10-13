@@ -45,8 +45,6 @@ use std::{
 };
 
 // TODO: add lots of tests
-// TODO: get rid of the hideous `can_send()` contraption
-// TODO: get rid of the hideous `pending_actions` contraption
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "sub-libp2p::request-response";
@@ -103,24 +101,6 @@ impl RequestResponseConfigT for RequestResponseConfig {
 	}
 }
 
-/// Request-response action.
-enum Action {
-	/// Send response.
-	SendResponse {
-		/// Request ID.
-		request_id: RequestId,
-
-		/// Response.
-		response: Vec<u8>,
-	},
-
-	/// Reject request.
-	RejectRequest {
-		/// Request ID.
-		request_id: RequestId,
-	},
-}
-
 /// Request-response protocol.
 ///
 /// TODO: explain in more detail
@@ -140,9 +120,6 @@ pub struct RequestResponseProtocol {
 	/// Pending outbound responses.
 	pending_outbound_responses:
 		FuturesUnordered<BoxFuture<'static, (RequestId, Result<OutgoingResponse, ()>)>>,
-
-	/// Pending actions.
-	pending_actions: VecDeque<Action>,
 }
 
 impl RequestResponseProtocol {
@@ -156,7 +133,6 @@ impl RequestResponseProtocol {
 			protocol,
 			handle,
 			inbound_queue,
-			pending_actions: VecDeque::new(),
 			pending_inbound_responses: HashMap::new(),
 			pending_outbound_responses: FuturesUnordered::new(),
 		}
@@ -192,45 +168,6 @@ impl Stream for RequestResponseProtocol {
 
 	fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
 		let this = Pin::into_inner(self);
-
-		// handle pending actions which were queued in a previous iteration
-		loop {
-			let Some(action) = this.pending_actions.pop_front() else { break };
-
-			// TODO: this can potentially cause issues
-			if !this.handle.can_send() {
-				this.pending_actions.push_front(action);
-				break
-			}
-
-			// TODO: this is so ugly
-			match action {
-				Action::SendResponse { request_id, response } => {
-					log::trace!(target: LOG_TARGET, "send response ({request_id:?}), response len: {}", response.len());
-
-					let future = this.handle.send_response(request_id, response);
-					pin_mut!(future);
-					match future.poll(cx) {
-						Poll::Pending =>
-							log::error!(target: LOG_TARGET, "channel has capacity but couldn't send"),
-						Poll::Ready(Err(_)) => return Poll::Ready(None),
-						Poll::Ready(Ok(())) => {},
-					}
-				},
-				Action::RejectRequest { request_id } => {
-					log::trace!(target: LOG_TARGET, "{:?}: reject request ({request_id:?})", this.protocol);
-
-					let future = this.handle.reject_request(request_id);
-					pin_mut!(future);
-
-					match future.poll(cx) {
-						Poll::Pending =>
-							log::error!(target: LOG_TARGET, "channel has capacity but couldn't send"),
-						Poll::Ready(()) => {},
-					}
-				},
-			}
-		}
 
 		// handle event's from litep2p's `RequestResponseHandle`.
 		while let Poll::Ready(event) = Pin::new(&mut this.handle).poll_next(cx) {
@@ -268,22 +205,7 @@ impl Stream for RequestResponseProtocol {
 									this.protocol,
 								);
 
-								match this.handle.can_send() {
-									true => {
-										let future = this.handle.reject_request(request_id);
-										pin_mut!(future);
-
-										match future.poll(cx) {
-											Poll::Pending =>
-												log::error!(target: LOG_TARGET, "channel has capacity but couldn't send"),
-											Poll::Ready(()) => {},
-										}
-									},
-									false => {
-										this.pending_actions
-											.push_back(Action::RejectRequest { request_id });
-									},
-								}
+								this.handle.reject_request(request_id);
 							},
 						}
 					},
@@ -337,18 +259,40 @@ impl Stream for RequestResponseProtocol {
 		}
 
 		// handle pending outbound responses
-		// TODO(aaro): implement
 		while let Poll::Ready(Some((request_id, event))) =
 			this.pending_outbound_responses.poll_next_unpin(cx)
 		{
 			match event {
 				Err(_) => {
-					log::error!(target: LOG_TARGET, "reject request");
-					// todo!();
+					log::debug!(target: LOG_TARGET, "{}: reject request ({request_id:?})", this.protocol);
+					this.handle.reject_request(request_id);
 				},
-				Ok(_) => {
-					log::error!(target: LOG_TARGET, "send respones");
-					// todo!();
+				Ok(response) => {
+					let OutgoingResponse {
+						result,
+						reputation_changes: _, // TODO: remove completely
+						sent_feedback: _,      // TODO: ???
+					} = response;
+
+					match result {
+						Ok(response) => {
+							log::trace!(
+								target: LOG_TARGET,
+								"{}: send response ({request_id:?}), response size {}",
+								this.protocol,
+								response.len()
+							);
+
+							this.handle.send_response(request_id, response);
+						},
+						Err(error) => {
+							log::debug!(
+								target: LOG_TARGET,
+								"{}: response rejected ({request_id:?}): {error:?}",
+								this.protocol,
+							);
+						},
+					}
 				},
 			}
 		}

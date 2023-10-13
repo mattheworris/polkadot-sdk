@@ -271,6 +271,7 @@ impl NetworkPeers for Litep2pNetworkService {
 			protocol: self.block_announce_protocol.clone(),
 			peers: HashSet::from_iter([peer.concat()]),
 		});
+
 		Ok(())
 	}
 

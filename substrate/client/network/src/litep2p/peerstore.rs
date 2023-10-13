@@ -63,17 +63,8 @@ impl PeerstoreHandle {
 	/// Adjust peer reputation.
 	pub fn report_peer(&mut self, peer: PeerId, reputation_change: i32) {
 		let mut lock = self.0.lock();
-		let current = lock.peers.entry(peer).or_default();
-
-		match current.checked_add(reputation_change) {
-			None => {
-				log::error!(target: LOG_TARGET, "current {current:?} {reputation_change:?}, failed");
-				panic!("here");
-			},
-			Some(value) => {
-				*current = value;
-			},
-		}
+		let reputation = lock.peers.entry(peer).or_default();
+		*reputation = reputation.saturating_add(reputation_change);
 	}
 
 	/// Get next outbound peer for connection attempt, ignoring all peers in `ignore`.
