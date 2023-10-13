@@ -38,6 +38,8 @@ use std::{
 	time::Duration,
 };
 
+// TODO: should reserved set updates be atomic?
+
 /// Logging target for the file.
 const LOG_TARGET: &str = "sub-libp2p::peerset";
 
@@ -95,16 +97,16 @@ pub enum PeersetCommand {
 /// Commands emitted by [`Peerset`] to the notification protocol.
 #[derive(Debug)]
 pub enum PeersetNotificationCommand {
-	/// Open substream to peer.
+	/// Open substreams to one or more peers.
 	OpenSubstream {
-		/// Peer Id.
-		peer: PeerId,
+		/// Peer IDs.
+		peers: Vec<PeerId>,
 	},
 
-	/// Close substream to peer.
+	/// Close substream to one or more peers.
 	CloseSubstream {
-		/// Peer ID.
-		peer: PeerId,
+		/// Peer IDs.
+		peers: Vec<PeerId>,
 	},
 }
 
@@ -417,7 +419,6 @@ impl Stream for Peerset {
 		}
 
 		if let Poll::Ready(Some(action)) = Pin::new(&mut self.cmd_rx).poll_next(cx) {
-			// TODO: ugly
 			match action {
 				PeersetCommand::DisconnectPeer { peer } => match self.peers.remove(&peer) {
 					Some(PeerState::Connected { direction }) => {
@@ -425,16 +426,15 @@ impl Stream for Peerset {
 
 						self.peers.insert(peer, PeerState::Closing { direction });
 						return Poll::Ready(Some(PeersetNotificationCommand::CloseSubstream {
-							peer,
+							peers: vec![peer],
 						}))
 					},
 					Some(PeerState::Opening { .. }) => {
 						todo!("queue pending close for the stream and once it opens, close the stream");
 					},
 					Some(state) => {
-						log::warn!(target: LOG_TARGET, "{}: cannot disconnect peer, invalid state: {state:?}", self.protocol);
+						log::debug!(target: LOG_TARGET, "{}: cannot disconnect peer, invalid state: {state:?}", self.protocol);
 						self.peers.insert(peer, state);
-						debug_assert!(false);
 					},
 					None => {
 						log::error!(target: LOG_TARGET, "{}: peer {peer:?} doens't exist", self.protocol);
@@ -469,7 +469,7 @@ impl Stream for Peerset {
 			log::trace!(target: LOG_TARGET, "{}: open connection to reserved peer {peer:?}", self.protocol);
 
 			self.peers.insert(peer, PeerState::Opening);
-			return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peer }))
+			return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peers: vec![peer] }))
 		}
 
 		// if the number of outbound peers is lower than the desired amount of oubound peers,
@@ -491,12 +491,17 @@ impl Stream for Peerset {
 				})
 				.collect();
 
-			if let Some(peer) = self.peerstore_handle.next_outbound_peer(&ignore) {
-				log::trace!(target: LOG_TARGET, "start connecting to peer {peer:?}");
+			// TODO(aaro): take multiple peers and batch them under one command
+			let peers: Vec<_> = self.peerstore_handle.next_outbound_peers(&ignore, self.max_out - self.num_out).collect();
+			if peers.len() > 0 {
+				log::trace!(target: LOG_TARGET, "start connecting to peer {peers:?}");
 
-				self.peers.insert(peer, PeerState::Opening);
-				self.num_out += 1;
-				return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peer }))
+				peers.iter().for_each(|peer| {
+					self.peers.insert(*peer, PeerState::Opening);
+				});
+
+				self.num_out += peers.len();
+				return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peers }))
 			}
 		}
 

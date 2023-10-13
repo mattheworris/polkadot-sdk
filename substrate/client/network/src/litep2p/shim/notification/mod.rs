@@ -126,14 +126,17 @@ impl NotificationProtocol {
 		log::trace!(target: LOG_TARGET, "handle peerset command: {command:?}");
 
 		match command {
-			PeersetNotificationCommand::OpenSubstream { peer } => {
-				let res = self.handle.open_substream(peer.into()).await;
-				// log::error!(target: LOG_TARGET, "result: {res:?}");
-				let _ = res.unwrap();
+			PeersetNotificationCommand::OpenSubstream { peers } => {
+				for peer in peers {
+					let res = self.handle.open_substream(peer.into()).await;
+					// log::error!(target: LOG_TARGET, "result: {res:?}");
+					let _ = res.unwrap();
+				}
 			},
-			PeersetNotificationCommand::CloseSubstream { peer } => {
-				self.handle.close_substream(peer.into()).await;
-			},
+			PeersetNotificationCommand::CloseSubstream { peers } =>
+				for peer in peers {
+					self.handle.close_substream(peer.into()).await;
+				},
 		}
 	}
 }
