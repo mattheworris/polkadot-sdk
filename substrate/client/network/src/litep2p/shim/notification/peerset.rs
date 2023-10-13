@@ -138,10 +138,10 @@ pub enum PeersetNotificationCommand {
 ///
 /// Irrespective of which side closed the substream (local/remote), the substream is chilled for a
 /// small amount of time ([`DEFAULT_BACKOFF`]) and during this time no inbound or outbound
-/// substreams are accepted/established. Inbound subtreams are completely rejected and outbound substream
-/// requests are put on hold. Once the backoff expires and if the local node is still interested in
-/// opening an outbound substream (the request hasn't been canceled), outbound substream request is
-/// made to litep2p.
+/// substreams are accepted/established. Inbound subtreams are completely rejected and outbound
+/// substream requests are put on hold. Once the backoff expires and if the local node is still
+/// interested in opening an outbound substream (the request hasn't been canceled), outbound
+/// substream request is made to litep2p.
 ///
 /// Disconnections and open failures will contribute negatively to the peer score to prevent it from
 /// being selected for another outbound substream request soon after the failure/disconnection. The
@@ -288,13 +288,15 @@ impl Peerset {
 
 	/// Report to [`Peerset`] that a substream was closed.
 	///
-	/// If the peer was not a reserved peer, the inbound/outbound slot count is adjusted to account for the disconnected peer.
-	/// After the connection is closed, the peer is chilled for a duration of [`DEFAULT_BACKOFF`] which prevens [`Peerset`] from
-	/// establishing/accepting new connections for that time period.
+	/// If the peer was not a reserved peer, the inbound/outbound slot count is adjusted to account
+	/// for the disconnected peer. After the connection is closed, the peer is chilled for a
+	/// duration of [`DEFAULT_BACKOFF`] which prevens [`Peerset`] from establishing/accepting new
+	/// connections for that time period.
 	///
-	/// Reserved peers cannot be disconnected using this method and they can be disconnected only if they're banned.
+	/// Reserved peers cannot be disconnected using this method and they can be disconnected only if
+	/// they're banned.
 	pub fn report_substream_closed(&mut self, peer: PeerId) {
-		log::debug!(
+		log::info!(
 			target: LOG_TARGET,
 			"{}: substream closed to {peer:?}, reserved peer {}",
 			self.protocol,
@@ -440,17 +442,20 @@ impl Stream for Peerset {
 					},
 				},
 				PeersetCommand::SetReservedPeers { peers } => {
-					log::debug!(target: LOG_TARGET, "{}: set reserved peers {peers:?}", self.protocol);
+					// log::debug!(target: LOG_TARGET, "{}: set reserved peers {peers:?}",
+					// self.protocol);
 				},
 				PeersetCommand::AddReservePeers { peers } => {
-					log::debug!(target: LOG_TARGET, "{}: add reserved peers {peers:?}", self.protocol);
-					// self.reserved_peers.extend(peers.into_iter());
+					// log::debug!(target: LOG_TARGET, "{}: add reserved peers {peers:?}",
+					// self.protocol); self.reserved_peers.extend(peers.into_iter());
 				},
 				PeersetCommand::RemoveReservedPeers { peers } => {
-					log::debug!(target: LOG_TARGET, "{}: remove reserved peers {peers:?}", self.protocol);
+					// log::debug!(target: LOG_TARGET, "{}: remove reserved peers {peers:?}",
+					// self.protocol);
 				},
 				PeersetCommand::SetReservedOnly { reserved_only } => {
-					log::debug!(target: LOG_TARGET, "{}: set reserved only mode to {reserved_only}", self.protocol);
+					// log::debug!(target: LOG_TARGET, "{}: set reserved only mode to
+					// {reserved_only}", self.protocol);
 
 					// self.reserved_only = reserved_only;
 					// if self.reserved_only {}
