@@ -123,20 +123,14 @@ impl NotificationProtocol {
 
 	/// Handle `Peerset` command.
 	async fn on_peerset_command(&mut self, command: PeersetNotificationCommand) {
-		log::trace!(target: LOG_TARGET, "handle peerset command: {command:?}");
-
 		match command {
 			PeersetNotificationCommand::OpenSubstream { peers } => {
-				for peer in peers {
-					let res = self.handle.open_substream(peer.into()).await;
-					// log::error!(target: LOG_TARGET, "result: {res:?}");
-					let _ = res.unwrap();
-				}
+				let res = self.handle.open_substream_batch(peers.into_iter().map(From::from)).await;
+				// log::error!(target: LOG_TARGET, "result: {res:?}");
+				let _ = res.unwrap();
 			},
 			PeersetNotificationCommand::CloseSubstream { peers } =>
-				for peer in peers {
-					self.handle.close_substream(peer.into()).await;
-				},
+				self.handle.close_substream_batch(peers.into_iter().map(From::from)).await,
 		}
 	}
 }
@@ -249,7 +243,6 @@ impl NotificationService for NotificationProtocol {
 						peer,
 					} => {
 						self.peerset.report_substream_closed(peer.into());
-
 						return Some(SubstrateNotificationEvent::NotificationStreamClosed { peer: peer.into() })
 					}
 					NotificationEvent::NotificationStreamOpenFailure {
@@ -261,9 +254,7 @@ impl NotificationService for NotificationProtocol {
 						notification,
 					} => return Some(SubstrateNotificationEvent::NotificationReceived { peer: peer.into(), notification }),
 				},
-				command = self.peerset.next() => {
-					self.on_peerset_command(command?).await;
-				},
+				command = self.peerset.next() => self.on_peerset_command(command?).await,
 				result = self.pending_validations.next(), if !self.pending_validations.is_empty() => {
 					let (peer, result) = result?;
 					let validation_result = match result {

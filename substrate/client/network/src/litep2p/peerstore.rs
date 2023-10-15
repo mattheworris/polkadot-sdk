@@ -70,7 +70,11 @@ impl PeerstoreHandle {
 	/// Get next outbound peers for connection attempts, ignoring all peers in `ignore`.
 	///
 	/// Returns `None` if there are no peers available.
-	pub fn next_outbound_peers(&self, ignore: &HashSet<&PeerId>, num_peers: usize) -> impl Iterator<Item = &PeerId> {
+	pub fn next_outbound_peers(
+		&self,
+		ignore: &HashSet<&PeerId>,
+		num_peers: usize,
+	) -> impl Iterator<Item = PeerId> {
 		let handle = self.0.lock();
 
 		// TODO: this is really bad
@@ -78,10 +82,14 @@ impl PeerstoreHandle {
 			.peers
 			.iter()
 			.filter_map(|(peer, score)| (!ignore.contains(&peer)).then_some((*peer, score)))
-			.collect::<Vec<_>>();
+			.collect::<Vec<(PeerId, _)>>();
 		candidates.sort_by(|(_, a), (_, b)| a.cmp(b));
-
-		candidates.into_iter().take(num_peers).map(|(peer, _score)| peer).copied()
+		candidates
+			.into_iter()
+			.take(num_peers)
+			.map(|(peer, _score)| peer)
+			.collect::<Vec<_>>()
+			.into_iter()
 	}
 
 	pub fn peer_count(&self) -> usize {

@@ -157,7 +157,10 @@ enum PeerState {
 	Disconnected,
 
 	/// Connection to peer is pending.
-	Opening,
+	Opening {
+		/// Direction of the connection.
+		direction: Direction,
+	},
 
 	/// Substream to peer was recently closed and the peer is currently backed off.
 	///
@@ -279,7 +282,7 @@ impl Peerset {
 	/// Slot for the stream was "preallocated" when the it was initiated (outbound) or accepted
 	/// (inbound) by the local node which is why this function doesn't allocate a slot for the peer.
 	pub fn report_substream_opened(&mut self, peer: PeerId, direction: Direction) {
-		log::debug!(
+		log::trace!(
 			target: LOG_TARGET,
 			"substream opened to {peer:?}, direction {direction:?}, reserved peer {}",
 			self.reserved_peers.contains(&peer)
@@ -298,7 +301,7 @@ impl Peerset {
 	/// Reserved peers cannot be disconnected using this method and they can be disconnected only if
 	/// they're banned.
 	pub fn report_substream_closed(&mut self, peer: PeerId) {
-		log::info!(
+		log::trace!(
 			target: LOG_TARGET,
 			"{}: substream closed to {peer:?}, reserved peer {}",
 			self.protocol,
@@ -349,7 +352,7 @@ impl Peerset {
 
 		match state {
 			PeerState::Disconnected => {
-				*state = PeerState::Opening;
+				*state = PeerState::Opening { direction: Direction::Inbound };
 			},
 			PeerState::Backoff => {
 				log::trace!(target: LOG_TARGET, "{}: peer ({peer:?}) is backed-off, reject inbound substream", self.protocol);
@@ -395,16 +398,6 @@ impl Peerset {
 			Delay::new(DEFAULT_BACKOFF).await;
 			peer
 		}));
-	}
-
-	/// Try to get next reserved peer which is not currently connected.
-	fn try_get_reserved_peer(&self) -> Option<PeerId> {
-		self.peers
-			.iter()
-			.find(|(peer, state)| {
-				self.reserved_peers.contains(peer) && std::matches!(state, PeerState::Disconnected)
-			})
-			.map(|info| *info.0)
 	}
 }
 
@@ -465,11 +458,30 @@ impl Stream for Peerset {
 		}
 
 		// try to establish connection any reserved peer who is not currently connected
-		if let Some(peer) = self.try_get_reserved_peer() {
-			log::trace!(target: LOG_TARGET, "{}: open connection to reserved peer {peer:?}", self.protocol);
+		let reserved_peers = self
+			.peers
+			.iter()
+			.filter_map(|(peer, state)| {
+				(self.reserved_peers.contains(peer) &&
+					std::matches!(state, PeerState::Disconnected))
+				.then_some(*peer)
+			})
+			.collect::<Vec<_>>();
 
-			self.peers.insert(peer, PeerState::Opening);
-			return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peers: vec![peer] }))
+		if !reserved_peers.is_empty() {
+			log::trace!(
+				target: LOG_TARGET,
+				"{}: start connecting to reserved peers {reserved_peers:?}",
+				self.protocol,
+			);
+
+			reserved_peers.iter().for_each(|peer| {
+				self.peers.insert(*peer, PeerState::Opening { direction: Direction::Outbound });
+			});
+
+			return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream {
+				peers: reserved_peers,
+			}))
 		}
 
 		// if the number of outbound peers is lower than the desired amount of oubound peers,
@@ -484,23 +496,26 @@ impl Stream for Peerset {
 					std::matches!(
 						state,
 						PeerState::Closing { .. } |
-							PeerState::Backoff | PeerState::Opening |
+							PeerState::Backoff | PeerState::Opening { .. } |
 							PeerState::Connected { .. }
 					)
 					.then_some(peer)
 				})
 				.collect();
 
-			// TODO(aaro): take multiple peers and batch them under one command
-			let peers: Vec<_> = self.peerstore_handle.next_outbound_peers(&ignore, self.max_out - self.num_out).collect();
+			let peers: Vec<_> = self
+				.peerstore_handle
+				.next_outbound_peers(&ignore, self.max_out - self.num_out)
+				.collect();
+
 			if peers.len() > 0 {
-				log::trace!(target: LOG_TARGET, "start connecting to peer {peers:?}");
+				log::trace!(target: LOG_TARGET, "{}: start connecting to peers {peers:?}", self.protocol);
 
 				peers.iter().for_each(|peer| {
-					self.peers.insert(*peer, PeerState::Opening);
+					self.peers.insert(*peer, PeerState::Opening { direction: Direction::Outbound });
 				});
-
 				self.num_out += peers.len();
+
 				return Poll::Ready(Some(PeersetNotificationCommand::OpenSubstream { peers }))
 			}
 		}
