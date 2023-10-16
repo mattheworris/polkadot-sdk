@@ -2296,20 +2296,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chain-spec-builder"
-version = "2.0.0"
-dependencies = [
- "ansi_term",
- "clap 4.4.6",
- "rand 0.8.5",
- "sc-chain-spec",
- "sc-keystore",
- "sp-core",
- "sp-keystore",
- "staging-node-cli",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17415,6 +17401,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
+name = "staging-chain-spec-builder"
+version = "2.0.0"
+dependencies = [
+ "ansi_term",
+ "clap 4.4.6",
+ "rand 0.8.5",
+ "sc-chain-spec",
+ "sc-keystore",
+ "sp-core",
+ "sp-keystore",
+ "staging-node-cli",
+]
+
+[[package]]
 name = "staging-node-cli"
 version = "3.0.0-dev"
 dependencies = [
@@ -17706,7 +17706,6 @@ name = "substrate"
 version = "1.0.0"
 dependencies = [
  "aquamarine",
- "chain-spec-builder",
  "frame-support",
  "sc-cli",
  "sc-consensus-aura",
@@ -17717,6 +17716,7 @@ dependencies = [
  "sc-consensus-pow",
  "sc-service",
  "sp-runtime",
+ "staging-chain-spec-builder",
  "subkey",
 ]
 
